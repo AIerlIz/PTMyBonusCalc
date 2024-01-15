@@ -39,9 +39,16 @@
 // @match        *://hdmayi.com/torrents*
 // @match        *://pt.msg.vg/torrents*
 // @match        *://*/mybonus.php*
+// @match        *://ptchina.org/torrents*
+// @match        *://52pt.site/torrents*
+// @match        *://zmpt.cc/torrents*
+// @match        *://carpt.net/torrents*
+// @match        *://cyanbug.net/torrents*
 // @license      GPL License
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @downloadURL https://update.greasyfork.org/scripts/439369/PT%E7%AB%99%E7%82%B9%E9%AD%94%E5%8A%9B%E8%AE%A1%E7%AE%97%E5%99%A8.user.js
+// @updateURL https://update.greasyfork.org/scripts/439369/PT%E7%AB%99%E7%82%B9%E9%AD%94%E5%8A%9B%E8%AE%A1%E7%AE%97%E5%99%A8.meta.js
 // ==/UserScript==
 
 function run() {
@@ -81,9 +88,9 @@ function run() {
             }
         }
 
-        function calcB(A){
-            return B0*(2/Math.PI)*Math.atan(A/L)
-        }
+//        function calcB(A){
+//            return B0*(2/Math.PI)*Math.atan(A/L)
+//        }
 
         let data = []
         for (let i=0; i<25*L; i=i+L/4){
@@ -155,6 +162,10 @@ function run() {
         return c1 * S * c2;
     }
 
+            function calcB(A){
+            return B0*(2/Math.PI)*Math.atan(A/L)
+        }
+
     function makeA($this, i_T, i_S, i_N) {
         var time = $this.children('td:eq(' + i_T + ')').find("span").attr("title");
         var T = (new Date().getTime() - new Date(time).getTime()) / 1e3 / 86400 / 7;
@@ -176,12 +187,19 @@ function run() {
         var number = $this.children('td:eq(' + i_N + ')').text().trim();
         var N = parseInt(number);
         var A = calcA(T, S, N).toFixed(2);
+        var B = calcB(A).toFixed(2);
         var ave = (A / S).toFixed(2);
-        if ((A > S * 2) && (N != 0)) {
-            //标红A大于体积2倍且不断种的种子
-            return '<span style="color:#ff0000;font-weight:900;">' + A + '@' + ave + '</span>'
+        if ((ave >= 2) && (N > 0)) {
+            //标色A大于体积2倍且不断种的种子
+            return '<span style="color:#ff0000;font-weight:900;">' + B + '@' + ave + '</span>'
+        }else if ((ave >= 1) && (N > 0)) {
+            //标色A大于体积1倍且不断种的种子
+            return '<span style="color:#da70d6;font-weight:900;">' + B + '@' + ave + '</span>'
+        }else if ((ave < 0.5) && (N > 0)) {
+            //标色A小于体积0.5倍且不断种的种子
+            return '<span style="color:#e6e6e6;font-weight:900;">' + B + '@' + ave + '</span>'
         } else {
-            return '<span style="">' + A + '@' + ave + "</span>"
+            return '<span style="">' + B + '@' + ave + "</span>"
         }
     }
 
@@ -202,7 +220,7 @@ function run() {
                 alert('未能找到数据列')
                 return
             }
-            $this.children("td:last").before("<td class=\"colhead\" title=\"A值@每GB的A值\">A@A/GB</td>");
+            $this.children("td:last").before("<td class=\"colhead\" title=\"B值@每GB的A值\">B@A/GB</td>");
         } else {
             var textA = makeA($this, i_T, i_S, i_N)
             $this.children("td:last").before("<td class=\"rowfollow\">" + textA + "</td>");
