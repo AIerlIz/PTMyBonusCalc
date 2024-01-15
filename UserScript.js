@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PT站点魔力计算器
 // @namespace    http://tampermonkey.net/
-// @version      2.0.1
+// @version      2.0.2
 // @description  在使用NexusPHP架构的PT站点显示每个种子的A值和每GB的A值。
 // @author       neoblackxt, LaneLau
 // @require      https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js
@@ -189,17 +189,17 @@ function run() {
         var A = calcA(T, S, N).toFixed(2);
         var B = calcB(A).toFixed(2);
         var ave = (A / S).toFixed(2);
-        if ((ave >= 2) && (N > 0)) {
+        if ((A > S * 2) && (N != 0)) {
             //标色A大于体积2倍且不断种的种子
-            return '<span style="color:#ff0000;font-weight:900;">' + B + '@' + ave + '</span>'
-        }else if ((ave >= 1) && (N > 0)) {
+            return '<span style="color:#FF0000;font-weight:900;">' + B + '@' + ave + '</span>'
+        }else if ((A > S * 1) && (N != 0)) {
             //标色A大于体积1倍且不断种的种子
-            return '<span style="color:#da70d6;font-weight:900;">' + B + '@' + ave + '</span>'
-        }else if ((ave < 0.5) && (N > 0)) {
+            return '<span style="color:#FF00FF;font-weight:900;">' + B + '@' + ave + '</span>'
+        }else if ((A > S * 0.5) && (N != 0)) {
             //标色A小于体积0.5倍且不断种的种子
-            return '<span style="color:#e6e6e6;font-weight:900;">' + B + '@' + ave + '</span>'
-        } else {
-            return '<span style="">' + B + '@' + ave + "</span>"
+            return '<span style="color:#9966CC;font-weight:900;">' + B + '@' + ave + '</span>'
+        }else {
+            return '<span style="color:#e6e6e6;font-weight:900;">' + B + '@' + ave + "</span>"
         }
     }
 
