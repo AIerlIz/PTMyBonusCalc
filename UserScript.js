@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PT站点魔力计算器
 // @namespace    https://github.com/AIerlIz/PTMyBonusCalc
-// @version      2.3.2
+// @version      2.4.0
 // @description  在NexusPHP架构的PT站点显示每个种子的B值(时魔)、A值和每GB的A值。支持userdetails做种列表显示。通用匹配，自动适配。
 // @author       AIerlIz (forked from neoblackxt, LaneLau)
 // @require      https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js
@@ -31,6 +31,10 @@
 // @grant        window.onurlchange
 // ==/UserScript==
 
+// ============================================================
+// 第 1 层：常量与站点配置
+// ============================================================
+
 /**
  * B|A@A/GB 中 A/GB 值不同范围对应的显示颜色及字体粗细。
  *
@@ -43,616 +47,852 @@
  *   - [1.5, 2): 棕色更粗，优质种子
  *   - [2, ∞):   红色最粗，极品种子，值得优先挂种
  */
-const colorsOfAVE = [
-    // null 表示使用页面默认颜色和字重
-    {min: 0, max: 1, color: null, fontWeight: 700},    // 默认色 — 普通
-    {min: 1, max: 1.5, color: '#00008B', fontWeight: 700},   // 蓝色加粗 — 较好
-    {min: 1.5, max: 2, color: '#8B4513', fontWeight: 800},   // 棕色更粗 — 优质
-    {min: 2, max: Infinity, color: '#ff0000', fontWeight: 900} // 红色最粗 — 极品
-]
+const COLORS_OF_AVE = [
+    { min: 0, max: 1, color: null, fontWeight: 700 },
+    { min: 1, max: 1.5, color: '#00008B', fontWeight: 700 },
+    { min: 1.5, max: 2, color: '#8B4513', fontWeight: 800 },
+    { min: 2, max: Infinity, color: '#ff0000', fontWeight: 900 },
+];
 
 /**
- * 脚本主入口函数。
+ * 站点配置表。
  *
- * 整个脚本在两个场景下运行：
- * 1. 种子列表页 (/torrents 等) — 在每个种子行中插入 A@A/GB 列，帮助用户评估挂种收益。
- * 2. 魔力值说明页 (/mybonus) — 提取站点魔力值公式参数（T0/N0/B0/L），并绘制 B-A 曲线图。
+ * 每个站点一个 profile，定义该站的 DOM 结构特征和特殊逻辑。
+ * 新增站点只需添加一个新的 profile 对象，无需修改核心代码。
  *
- * 核心公式：
- *   A = (1 - 10^(-T/T0)) * S * (1 + √2 * 10^(-(N-1)/(N0-1)))
- *   B = B0 * (2/π) * arctan(A/L)
- *
- * 其中：
- *   T — 种子已发布周数
- *   S — 种子体积（GB）
- *   N — 当前做种人数
- *   T0, N0, B0, L — 站点魔力值系统参数（各站不同，从 /mybonus 页面提取）
- *
- * A 值代表种子在当前状态下的魔力值潜力，A/GB 代表单位体积的收益率。
+ * match 函数按数组顺序匹配，首个匹配成功即停止，最后一个为默认兜底。
  */
-function run() {
-    var $ = jQuery;
+const SITE_PROFILES = [
+    {
+        // ---- M-Team：自定义 SPA 前端，DOM 结构与 NexusPHP 不同 ----
+        id: 'm-team',
+        match: (host) => host.includes('m-team'),
+        isSPA: true,
 
-    // ==================== 第一部分：读取/获取魔力值参数 ====================
+        // 种子表格
+        seedTable: {
+            // 数据行选择器（不含表头，表头在 thead 中）
+            rowSelector: 'div.mt-4>table>tbody>tr',
+            // 表头选择器（独立于数据行）
+            headerSelector: 'div.mt-4>table>thead>tr>th',
+            // 列识别策略：position = 固定偏移量，icon = 图标识别
+            colStrategy: 'position',
+            // 从末尾列往前数的偏移量
+            colOffsets: { timeFromEnd: 5, sizeFromEnd: 4, seedersFromEnd: 3 },
+            // 表头单元格标签名
+            headerTag: 'th',
+            // 新列插入模式：'after-last' 在最后一列之后，'before-last' 在最后一列之前
+            insertMode: 'after-last',
+            // 已添加列检测用文字
+            colTitle: 'B|A@A/GB',
+        },
 
-    let argsReady = true;
-    // 尝试从 Tampermonkey 存储中读取已保存的站点参数
-    let T0 = GM_getValue(host + ".T0");
-    let N0 = GM_getValue(host + ".N0");
-    let B0 = GM_getValue(host + ".B0");
-    let L = GM_getValue(host + ".L");
-    if (!(T0 && N0 && B0 && L)) {
-        argsReady = false
-    }
-
-    // 在魔力值说明页：从页面 DOM 中提取参数并持久化存储
-    if (isMybonusPage) {
-        // 检查该站点是否已被标记为"无法自动获取参数"
-        let bonusBlocked = GM_getValue(host + ".bonus_blocked");
-        if (bonusBlocked) {
-            // 已标记：跳过自动提取，避免反复弹出错误提示
-            // 用户可手动在 Tampermonkey 存储中配置 T0/N0/B0/L 后删除 bonus_blocked 键
-            console.log('[PTMyBonusCalc] 该站点已标记为无法自动获取魔力值参数，跳过。');
-        } else {
-            try {
-                // 从页面中的列表项提取四个关键参数
-                T0 = parseInt($("li:has(b:contains('T0'))")[1].innerText.split(" = ")[1]);
-                N0 = parseInt($("li:has(b:contains('N0'))")[1].innerText.split(" = ")[1]);
-                B0 = parseInt($("li:has(b:contains('B0'))")[1].innerText.split(" = ")[1]);
-                L = parseInt($("li:has(b:contains('L'))")[1].innerText.split(" = ")[1]);
-                console.log('数据提取成功:', T0, N0, B0, L);
-            } catch (error) {
-                console.error('数据提取过程中出现错误:', error);
-            }
-
-            if (!argsReady) {
-                if (T0 && N0 && B0 && L) {
-                    argsReady = true
-                    alert("魔力值参数已更新")
-                    // 提取成功，清除可能存在的 blocked 标记
-                    GM_setValue(host + ".bonus_blocked", false);
-                } else {
-                    // 参数提取失败：标记站点，后续不再自动提取
-                    T0 = N0 = B0 = L = 0;
-                    GM_setValue(host + ".bonus_blocked", true);
-                    alert("魔力值参数获取失败,该站点已记录，后续不再自动获取。请将Tampermonkey的配置模式修改为高级后手动修改存储配置参数，详见说明文档")
-                }
-
-                // 持久化存储参数，下次访问种子列表页时可直接使用
-                GM_setValue(host + ".T0", T0);
-                GM_setValue(host + ".N0", N0);
-                GM_setValue(host + ".B0", B0);
-                GM_setValue(host + ".L", L);
-            }
-        }
-
-        if (!argsReady) {
-            // 参数错误时终止执行，避免页面卡死
-            return
-        }
-
-        // ==================== 第二部分：绘制 B-A 曲线图 ====================
-
-        /**
-         * 根据 A 值计算 B 值（魔力值/小时）
-         * B = B0 * (2/π) * arctan(A/L)
-         */
-        function calcB(A) {
-            return B0 * (2 / Math.PI) * Math.atan(A / L)
-        }
-
-        /**
-         * 从 B 值反推 A 值
-         * A = L * tan(B / B0 / (2/π))
-         */
-        function calcAbyB(B) {
-            return Math.tan(B / B0 / (2 / Math.PI)) * L
-        }
-
-        // 获取当前种子的 A 值（M-Team 和其他站点的 DOM 结构不同）
-        let A = isMTeam ? 0 : parseFloat($("div:contains(' (A = ')")[0].innerText.split(" = ")[1]);
-        let B = isMTeam ? parseFloat($("td:contains('基本獎勵')+td+td")[0].innerText) : calcB(A);
-
-        // M-Team 特殊处理：页面显示的"基本奖励"包含了做种数奖励，需要扣除
-        // 扣除公式：基本奖励 = 总奖励 - min(当前做种数, 做种上限) × 每种子奖励
-        if (isMTeam) {
-            let matches = $("h5:contains('做種每小時將得到如下的魔力值')").next().children().first().text()
-                .match(/(\d+(\.\d+)?)個魔力值.*最多計(\d+)個/);
-            let seedingBonusPerSeed = parseFloat(matches[1]);
-            let seedingBonusLimit = parseInt(matches[3]);
-            // 获取当前做种数（需要 clone 并替换 img 标签来提取纯文本中的数字）
-            let currentSeedingNode = $("span:contains('當前活動')").parent().clone();
-            currentSeedingNode.find('img').replaceWith(function () {
-                return "img";
-            });
-            let currentSeeding = parseInt(currentSeedingNode.text().match(/(\d+)/)[1]);
-            B = B - (currentSeeding > seedingBonusLimit ?
-                seedingBonusPerSeed * seedingBonusLimit : seedingBonusPerSeed * currentSeeding);
-        }
-
-        // 防止 B 值溢出：若 B >= B0，取 B0 的 98% 作为上限
-        // 原因：arctan 函数渐近于 B0，B 值理论上不可能达到或超过 B0
-        B = B >= B0 ? B0 * 0.98 : B
-
-        // M-Team 需从修正后的 B 值反推 A 值
-        if (isMTeam) {
-            A = calcAbyB(B);
-        }
-
-        // 当前种子的坐标点 (A, B)
-        let spot = [A, B]
-
-        // 生成 B-A 曲线的采样数据点，用于 ECharts 绘图
-        // 横轴范围：max(1.1*A, 25*L)，步长 L/4，确保曲线完整展示
-        let data = []
-        for (let i = 0; i < (1.1 * A > 25 * L ? 1.1 * A : 25 * L); i = i + L / 4) {
-            data.push([i, calcB(i)])
-        }
-
-        // 在页面上插入 ECharts 图表容器
-        let insertPos = isMTeam ? $("ul+table") : $("table+h1")
-        insertPos.before('<div id="main" style="width: 600px;height:400px; margin:auto;"></div>')
-
-        // 使用 ECharts 初始化并渲染 B-A 曲线图
-        var myChart = echarts.init(document.getElementById('main'));
-        var option = {
-            title: {
-                text: 'B - A 图',
-                top: 'bottom',
-                left: 'center'
+        // mybonus 页面：M-Team 需要从 B 值反推 A 值
+        mybonus: {
+            // 提取当前 B 值（页面显示的"基本獎勵"）
+            extractCurrentB($) {
+                return parseFloat($("td:contains('基本獎勵')+td+td")[0].innerText);
             },
-            tooltip: {
-                trigger: 'axis',
-                axisPointer: {
-                    type: 'cross'  // 十字准星指示器
-                },
-                backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                position: function (pos, params, el, elRect, size) {
-                    var obj = {top: 10};
-                    obj[['left', 'right'][+(pos[0] < size.viewSize[0] / 2)]] = 30;
-                    return obj;
-                },
-                extraCssText: 'width: 170px'
+            // M-Team 的 B 值包含了做种数奖励，需要扣除
+            adjustB($, rawB) {
+                const matches = $("h5:contains('做種每小時將得到如下的魔力值')")
+                    .next().children().first().text()
+                    .match(/(\d+(\.\d+)?)個魔力值.*最多計(\d+)個/);
+                const seedingBonusPerSeed = parseFloat(matches[1]);
+                const seedingBonusLimit = parseInt(matches[3]);
+                const currentSeedingNode = $("span:contains('當前活動')").parent().clone();
+                currentSeedingNode.find('img').replaceWith(function () { return "img"; });
+                const currentSeeding = parseInt(currentSeedingNode.text().match(/(\d+)/)[1]);
+                return rawB - (currentSeeding > seedingBonusLimit
+                    ? seedingBonusPerSeed * seedingBonusLimit
+                    : seedingBonusPerSeed * currentSeeding);
             },
-            xAxis: {
-                name: 'A',  // 横轴：A 值（种子魔力值潜力）
+            // 图表插入位置的选择器
+            chartInsertSelector: 'ul+table',
+        },
+
+        // M-Team 的有效页面
+        validPages: ['mybonus', 'browse'],
+    },
+
+    {
+        // ---- NexusPHP 通用站点：默认兜底 ----
+        id: 'nexusphp',
+        match: (_host) => true,
+        isSPA: false,
+
+        seedTable: {
+            rowSelector: '.torrents:last-of-type>tbody>tr',
+            headerSelector: null,  // 表头是 rowSelector 的第一行
+            colStrategy: 'icon',
+            iconClasses: { time: 'time', size: 'size', seeders: 'seeders' },
+            headerTag: 'td',
+            insertMode: 'before-last',
+            colTitle: 'B|A@A/GB',
+            headerClass: 'colhead',
+            dataClass: 'rowfollow',
+        },
+
+        mybonus: {
+            extractCurrentA($) {
+                return parseFloat($("div:contains(' (A = ')")[0].innerText.split(" = ")[1]);
             },
-            yAxis: {
-                name: 'B'   // 纵轴：B 值（每小时魔力值收益）
-            },
-            axisPointer: {
-                label: {
-                    backgroundColor: '#777'
-                }
-            },
-            series: [
-                {
-                    type: 'line',
-                    data: data,       // B-A 曲线
-                    symbol: 'none'    // 不显示数据点标记
-                },
-                {
-                    type: 'line',
-                    data: [spot],     // 当前种子在图上的位置
-                    symbolSize: 6     // 显示为实心圆点
-                }
-            ]
-        };
+            chartInsertSelector: 'table+h1',
+        },
 
-        myChart.setOption(option);
-    }
+        // userdetails.php 做种表格配置
+        userdetails: {
+            containerSelector: '#ka1',
+        },
 
-    // ==================== 第2.5部分：用户详情页 — 监听做种表格并添加 B|A@A/GB ====================
+        validPages: null,  // 所有页面均有效
+    },
+];
 
-    if (isUserdetailsPage) {
-        if (argsReady) {
-            setupUserdetailsObserver();
-        } else {
-            alert("未找到魔力值参数，请先打开魔力值系统说明页面获取（/mybonus）");
-        }
-        return;
-    }
+// ============================================================
+// 第 2 层：存储管理（封装 Tampermonkey GM_* API）
+// ============================================================
 
-    // ==================== 第三部分：种子列表页 — 计算并显示 B|A@A/GB ====================
+const StorageManager = {
+    /**
+     * 获取站点的魔力值参数。
+     * @param {string} host - 站点二级域名
+     * @returns {{ T0: number, N0: number, B0: number, L: number, ready: boolean }}
+     */
+    getParams(host) {
+        const T0 = GM_getValue(host + '.T0');
+        const N0 = GM_getValue(host + '.N0');
+        const B0 = GM_getValue(host + '.B0');
+        const L = GM_getValue(host + '.L');
+        return { T0, N0, B0, L, ready: !!(T0 && N0 && B0 && L) };
+    },
 
     /**
-     * 计算单个种子的 A 值。
+     * 持久化站点魔力值参数。
+     */
+    saveParams(host, params) {
+        GM_setValue(host + '.T0', params.T0);
+        GM_setValue(host + '.N0', params.N0);
+        GM_setValue(host + '.B0', params.B0);
+        GM_setValue(host + '.L', params.L);
+    },
+
+    /**
+     * 检查该站点是否已被标记为"无法自动获取参数"。
+     */
+    isBlocked(host) {
+        return !!GM_getValue(host + '.bonus_blocked');
+    },
+
+    /**
+     * 设置站点的 blocked 标记。
+     */
+    setBlocked(host, blocked) {
+        GM_setValue(host + '.bonus_blocked', blocked);
+    },
+};
+
+// ============================================================
+// 第 3 层：计算引擎（纯函数，无副作用，不依赖 DOM 或存储）
+// ============================================================
+
+const CalcEngine = {
+    /**
+     * 计算种子 A 值（魔力值潜力）。
      *
      * 公式：A = (1 - 10^(-T/T0)) * S * (1 + √2 * 10^(-(N-1)/(N0-1)))
      *
-     * @param {number} T — 种子已存活时间（周）
-     * @param {number} S — 种子体积（GB）
-     * @param {number} N — 当前做种人数（0 表示断种）
+     * @param {number} T  - 种子已存活时间（周）
+     * @param {number} S  - 种子体积（GB）
+     * @param {number} N  - 当前做种人数（0 表示断种，按 1 计算）
+     * @param {number} T0 - 站点时间参数
+     * @param {number} N0 - 站点做种人数参数
      * @returns {number} A 值
      */
-    function calcA(T, S, N) {
-        // 时间因子：种子存在时间越长，系数越接近 1
-        var c1 = 1 - Math.pow(10, -(T / T0));
-        // 做种人数因子：N 为 0（断种）时，视为 1 来计算续种后的实际值
-        // 续种后人数变 1，实际 A 值会比当前状态值小
-        N = N ? N : 1;
-        var c2 = 1 + Math.pow(2, .5) * Math.pow(10, -(N - 1) / (N0 - 1));
+    calcA(T, S, N, T0, N0) {
+        const c1 = 1 - Math.pow(10, -(T / T0));
+        N = N || 1;
+        const c2 = 1 + Math.pow(2, 0.5) * Math.pow(10, -(N - 1) / (N0 - 1));
         return c1 * S * c2;
-    }
+    },
 
     /**
-     * 为种子表格的一行生成 "B|A@A/GB" 的 HTML。
+     * 根据 A 值计算 B 值（时魔：每小时魔力值收益）。
      *
-     * B 值：该种子每小时可获得的魔力值（时魔），直接反映挂种收益。
-     *       B = B0 * (2/π) * arctan(A/L)，B 越接近 B0 收益越高。
-     * A 值：魔力值潜力，综合考虑时间、体积、做种人数。
-     * A/GB：单位体积的收益率，越高说明该种子越"划算"——用较小的硬盘空间换取较高的魔力值收益。
+     * 公式：B = B0 * (2/π) * arctan(A/L)
      *
-     * 显示格式：B|A@A/GB，其中：
-     *   B — 时魔（小时魔力值），用户最关心的数字
-     *   A — A 值（魔力值潜力）
-     *   A/GB — 单位体积收益率（用于横向比较不同体积的种子）
-     *
-     * @param {jQuery} $this — 种子行的 jQuery 对象
-     * @param {number} i_T   — 发布时间所在列的索引
-     * @param {number} i_S   — 种子体积所在列的索引
-     * @param {number} i_N   — 做种人数所在列的索引
-     * @returns {string} 带样式的 HTML 字符串，格式为 "B|A@A/GB"
+     * @param {number} A  - A 值
+     * @param {number} B0 - 站点 B0 参数（时魔上限）
+     * @param {number} L  - 站点 L 参数
+     * @returns {number} B 值
      */
-    function makeA($this, i_T, i_S, i_N) {
-        // ---- 提取发布时间 T ----
-        var time = $this.children('td:eq(' + i_T + ')').find("span").attr("title");
-        // 适配 M-Team：时间可能在 span 的文本中而非 title 属性
-        if (time == undefined || time == "") {
-            time = $this.children('td:eq(' + i_T + ')').find("span").text();
-        }
-        // 适配 TJUPT 和 userdetails 等：时间格式使用 <br> 分隔，或直接在 td 文本中
-        if (time == undefined || time == "") {
-            time = $this.children('td:eq(' + i_T + ')').html().replace(/<br\s*\/?>/gi, " ").trim();
-        }
-        // 将发布时间转换为周数
-        var T = (new Date().getTime() - new Date(time).getTime()) / 1e3 / 86400 / 7;
-
-        // ---- 提取种子体积 S（统一转换为 GB） ----
-        var size = $this.children('td:eq(' + i_S + ')').text().trim();
-        var size_tp = 1;  // 单位换算系数，默认为 GB
-        var S = size.replace(/[KMGT]i?B/, function (tp) {
-            if (tp == "KB" || tp == "KiB") {
-                size_tp = 1 / 1024 / 1024;   // KB → GB
-            } else if (tp == "MB" || tp == "MiB") {
-                size_tp = 1 / 1024;           // MB → GB
-            } else if (tp == "GB" || tp == "GiB") {
-                size_tp = 1;                  // 已是 GB，不变
-            } else if (tp == "TB" || tp == "TiB") {
-                size_tp = 1024;               // TB → GB
-            }
-            return "";  // 去掉单位字符串，只保留数值
-        });
-        S = parseFloat(S) * size_tp;
-
-        // ---- 提取做种人数 N ----
-        // 移除千分位逗号分隔符后再解析为整数
-        var number = $this.children('td:eq(' + i_N + ')').text().trim().replace(/,/g, '');
-        var N = parseInt(number);
-
-        // ---- 计算 A 值、A/GB 和 B 值（时魔） ----
-        var A = calcA(T, S, N).toFixed(2);
-        var ave = (A / S).toFixed(2);
-        // B = B0 * (2/π) * arctan(A/L)，每小时魔力值收益
-        var B = (B0 * (2 / Math.PI) * Math.atan(A / L)).toFixed(2);
-
-        // ---- 根据 A/GB 值范围着色（颜色反映性价比，B 值和 A/GB 共用同一颜色） ----
-        var textA = '<span>' + B + '|' + A + '@' + ave + '</span>';
-        colorsOfAVE.forEach(color => {
-            if (ave >= color.min && ave < color.max && (color.color != null || color.fontWeight != null)) {
-                textA = '<span style="'
-                    + (color.color == null ? '' : 'color:' + color.color + ";")
-                    + (color.fontWeight == null ? '' : 'font-weight:' + color.fontWeight + ";")
-                    + '">' + B + '|' + A + '@' + ave + '</span>';
-            }
-        });
-        return textA;
-    }
-
-    // ---------------- 用户详情页（userdetails.php）：监听 AJAX 做种表格并添加 B|A@A/GB 列 ----------------
-    // 做种表格通过 AJAX 动态加载（点击"显示/隐藏"后触发），使用 MutationObserver 监听。
+    calcB(A, B0, L) {
+        return B0 * (2 / Math.PI) * Math.atan(A / L);
+    },
 
     /**
-     * 为 userdetails 页面上的做种表格添加 B|A@A/GB 列。
+     * 从 B 值反推 A 值。
      *
-     * userdetails.php 中做种表格的表头结构与种子列表页不同：
-     *   - 没有 img.time 图标，时间列是纯文本 "col_added"
-     *   - 有 img.size 和 img.seeders 图标（与种子列表页相同）
-     *   - 数据行时间格式为 YYYY-MM-DD<br>HH:MM:SS
+     * 公式：A = L * tan(B / (B0 * 2/π))
      *
-     * 此函数通过图标识别 size 和 seeders 列，通过日期格式识别时间列。
-     *
-     * @param {jQuery} $table — 做种表格的 jQuery 对象（#ka1 table）
+     * @param {number} B  - B 值
+     * @param {number} B0 - 站点 B0 参数
+     * @param {number} L  - 站点 L 参数
+     * @returns {number} A 值
      */
-    function addDataColUserdetailsTable($table) {
-        var i_T, i_S, i_N;
-        var $rows = $table.find('tr');
+    calcAbyB(B, B0, L) {
+        return Math.tan(B / (B0 * (2 / Math.PI))) * L;
+    },
 
-        if ($rows.length < 2) return;  // 至少需要表头 + 一行数据
+    /**
+     * 格式化 B|A@A/GB 单元格的值，并根据 A/GB 值着色。
+     *
+     * @param {number} B   - 时魔
+     * @param {number} A   - A 值
+     * @param {number} ave - A/GB（单位体积收益率）
+     * @returns {string} 带样式的 HTML 字符串
+     */
+    formatCell(B, A, ave) {
+        const text = B + '|' + A + '@' + ave;
+        for (const c of COLORS_OF_AVE) {
+            if (ave >= c.min && ave < c.max && (c.color !== null || c.fontWeight !== null)) {
+                let style = '';
+                if (c.color !== null) style += 'color:' + c.color + ';';
+                if (c.fontWeight !== null) style += 'font-weight:' + c.fontWeight + ';';
+                return '<span style="' + style + '">' + text + '</span>';
+            }
+        }
+        return '<span>' + text + '</span>';
+    },
+};
 
-        // 第一步：通过图标识别种子大小列和做种人数列
-        $rows.first().children('td').each(function (col) {
-            if ($(this).find('img.size').length) {
-                i_S = col;
-            } else if ($(this).find('img.seeders').length) {
-                i_N = col;
+// ============================================================
+// 第 4 层：DOM 解析器（从页面提取种子数据和站点参数）
+// ============================================================
+
+const DOMParser = {
+    /**
+     * 从种子行提取发布时间并转为周数。
+     *
+     * 支持多种时间格式：
+     *   - span[title] 属性中的时间字符串（NexusPHP 标准格式）
+     *   - span 文本中的时间（M-Team）
+     *   - td 内 HTML 中 <br> 分隔的时间（TJUPT、userdetails）
+     *
+     * @param {jQuery} $td - 时间列的 td/th jQuery 对象
+     * @returns {number} 已存活周数
+     */
+    extractTimeWeeks($td) {
+        let time = $td.find('span').attr('title');
+        if (time === undefined || time === '') {
+            time = $td.find('span').text();
+        }
+        if (time === undefined || time === '') {
+            time = $td.html().replace(/<br\s*\/?>/gi, ' ').trim();
+        }
+        return (new Date().getTime() - new Date(time).getTime()) / 1000 / 86400 / 7;
+    },
+
+    /**
+     * 从种子行提取体积并转为 GB。
+     *
+     * 支持 KB/KiB、MB/MiB、GB/GiB、TB/TiB 单位。
+     *
+     * @param {jQuery} $td - 体积列的 td/th jQuery 对象
+     * @returns {number} 体积（GB）
+     */
+    extractSizeGB($td) {
+        const sizeText = $td.text().trim();
+        let factor = 1;
+        const numStr = sizeText.replace(/[KMGT]i?B/, function (unit) {
+            if (unit === 'KB' || unit === 'KiB') factor = 1 / 1024 / 1024;
+            else if (unit === 'MB' || unit === 'MiB') factor = 1 / 1024;
+            else if (unit === 'GB' || unit === 'GiB') factor = 1;
+            else if (unit === 'TB' || unit === 'TiB') factor = 1024;
+            return '';
+        });
+        return parseFloat(numStr) * factor;
+    },
+
+    /**
+     * 从种子行提取做种人数。
+     *
+     * @param {jQuery} $td - 做种人数列的 td/th jQuery 对象
+     * @returns {number} 做种人数（NaN 时返回 0）
+     */
+    extractSeeders($td) {
+        const numStr = $td.text().trim().replace(/,/g, '');
+        return parseInt(numStr) || 0;
+    },
+
+    /**
+     * 从魔力值说明页面提取站点参数（T0, N0, B0, L）。
+     *
+     * 适用于所有使用 NexusPHP 魔力值说明页格式的站点（包括 M-Team）。
+     *
+     * @param {jQuery} $ - jQuery 实例
+     * @returns {{ T0: number, N0: number, B0: number, L: number }|null}
+     */
+    extractParams($) {
+        try {
+            const T0 = parseInt($("li:has(b:contains('T0'))")[1].innerText.split(' = ')[1]);
+            const N0 = parseInt($("li:has(b:contains('N0'))")[1].innerText.split(' = ')[1]);
+            const B0 = parseInt($("li:has(b:contains('B0'))")[1].innerText.split(' = ')[1]);
+            const L = parseInt($("li:has(b:contains('L'))")[1].innerText.split(' = ')[1]);
+            return { T0, N0, B0, L };
+        } catch (error) {
+            console.error('[PTMyBonusCalc] 参数提取失败:', error);
+            return null;
+        }
+    },
+
+    /**
+     * 从表头行识别列索引（icon 策略：通过 img.time/size/seeders 图标）。
+     *
+     * @param {jQuery} $headerCells - 表头单元格的 jQuery 集合
+     * @param {{ time: string, size: string, seeders: string }} iconClasses
+     * @returns {{ i_T: number, i_S: number, i_N: number }|null}
+     */
+    detectColumnsByIcon($headerCells, iconClasses) {
+        let i_T, i_S, i_N;
+        $headerCells.each(function (col) {
+            if ($(this).find('img.' + iconClasses.time).length) i_T = col;
+            else if ($(this).find('img.' + iconClasses.size).length) i_S = col;
+            else if ($(this).find('img.' + iconClasses.seeders).length) i_N = col;
+        });
+        if (i_T === undefined || i_S === undefined || i_N === undefined) return null;
+        return { i_T, i_S, i_N };
+    },
+
+    /**
+     * 从数据行识别时间列索引（date-pattern 策略：查找匹配 YYYY-MM-DD 格式的列）。
+     *
+     * 用于 userdetails 页面等没有 img.time 图标的场景。
+     *
+     * @param {jQuery} $rows - 所有行（含表头和数据行）的 jQuery 集合
+     * @returns {number|undefined}
+     */
+    detectTimeColByDatePattern($rows) {
+        let i_T;
+        $rows.each(function (row) {
+            if (row === 0) return;  // 跳过表头
+            $(this).children('td').each(function (col) {
+                if ($(this).text().match(/\d{4}-\d{2}-\d{2}/)) {
+                    i_T = col;
+                    return false;
+                }
+            });
+            if (i_T !== undefined) return false;
+        });
+        return i_T;
+    },
+};
+
+// ============================================================
+// 第 5 层：渲染器（DOM 操作，插入列和图表）
+// ============================================================
+
+const Renderer = {
+    /**
+     * 为种子表格添加 B|A@A/GB 列。
+     *
+     * 统一处理 NexusPHP、M-Team、userdetails 三种场景的表格列插入。
+     *
+     * @param {object} options - 配置选项
+     * @param {jQuery} options.$headerRow - 表头行 jQuery 对象
+     * @param {jQuery} options.$dataRows - 数据行 jQuery 集合
+     * @param {object} options.cols - { i_T, i_S, i_N } 列索引
+     * @param {object} options.params - { T0, N0, B0, L } 站点参数
+     * @param {object} options.tableCfg - 站点 seedTable 配置
+     * @param {boolean} [options.updateOnly] - 是否仅更新已存在的列（翻页场景）
+     */
+    addTableColumn({ $headerRow, $dataRows, cols, params, tableCfg, updateOnly }) {
+        const { i_T, i_S, i_N } = cols;
+        const { T0, N0, B0, L } = params;
+
+        // --- 添加表头 ---
+        if (!updateOnly) {
+            const headerHtml = '<' + tableCfg.headerTag
+                + (tableCfg.headerClass ? ' class="' + tableCfg.headerClass + '"' : '')
+                + ' align="center" title="时魔|A值@每GB的A值">'
+                + tableCfg.colTitle + '</' + tableCfg.headerTag + '>';
+
+            if (tableCfg.insertMode === 'after-last') {
+                $headerRow.children(tableCfg.headerTag + ':last').after(headerHtml);
+            } else {
+                $headerRow.children(tableCfg.headerTag + ':last').before(headerHtml);
+            }
+        }
+
+        // --- 为每行添加/更新数据 ---
+        $dataRows.each(function () {
+            const $row = $(this);
+            const $timeTd = $row.children('td:eq(' + i_T + ')');
+            const $sizeTd = $row.children('td:eq(' + i_S + ')');
+            const $seedTd = $row.children('td:eq(' + i_N + ')');
+
+            const T = DOMParser.extractTimeWeeks($timeTd);
+            const S = DOMParser.extractSizeGB($sizeTd);
+            const N = DOMParser.extractSeeders($seedTd);
+
+            const A = CalcEngine.calcA(T, S, N, T0, N0).toFixed(2);
+            const ave = (A / S).toFixed(2);
+            const B = CalcEngine.calcB(A, B0, L).toFixed(2);
+
+            const cellHtml = CalcEngine.formatCell(B, A, ave);
+
+            if (updateOnly) {
+                $row.children('td:last').html(cellHtml);
+            } else if (tableCfg.insertMode === 'after-last') {
+                $row.children('td:last').after(
+                    '<td' + (tableCfg.dataClass ? ' class="' + tableCfg.dataClass + '"' : '')
+                    + ' align="center">' + cellHtml + '</td>');
+            } else {
+                $row.children('td:last').before(
+                    '<td' + (tableCfg.dataClass ? ' class="' + tableCfg.dataClass + '"' : '')
+                    + ' align="center">' + cellHtml + '</td>');
             }
         });
+    },
 
+    /**
+     * 在魔力值页面渲染 B-A 曲线图（使用 ECharts）。
+     *
+     * @param {object} options
+     * @param {jQuery} options.$insertBefore - 图表插入位置前的元素
+     * @param {number} options.A - 当前种子的 A 值
+     * @param {number} options.B - 当前种子的 B 值
+     * @param {number} options.B0 - 站点 B0 参数
+     * @param {number} options.L - 站点 L 参数
+     */
+    renderChart({ $insertBefore, A, B, B0, L }) {
+        // 生成 B-A 曲线数据点
+        const data = [];
+        const xMax = 1.1 * A > 25 * L ? 1.1 * A : 25 * L;
+        for (let i = 0; i < xMax; i += L / 4) {
+            data.push([i, CalcEngine.calcB(i, B0, L)]);
+        }
+
+        // 插入图表容器
+        $insertBefore.before('<div id="ptmybonuscalc-chart" style="width:600px;height:400px;margin:auto;"></div>');
+
+        const chart = echarts.init(document.getElementById('ptmybonuscalc-chart'));
+        chart.setOption({
+            title: { text: 'B - A 图', top: 'bottom', left: 'center' },
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'cross' },
+                backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                position: function (pos, _params, _el, _elRect, size) {
+                    const obj = { top: 10 };
+                    obj[['left', 'right'][+(pos[0] < size.viewSize[0] / 2)]] = 30;
+                    return obj;
+                },
+                extraCssText: 'width: 170px',
+            },
+            xAxis: { name: 'A' },
+            yAxis: { name: 'B' },
+            axisPointer: { label: { backgroundColor: '#777' } },
+            series: [
+                { type: 'line', data: data, symbol: 'none' },
+                { type: 'line', data: [[A, B]], symbolSize: 6 },
+            ],
+        });
+    },
+};
+
+// ============================================================
+// 第 6 层：页面处理器
+// ============================================================
+
+/**
+ * 处理魔力值说明页（/mybonus）：
+ *   1. 自动提取站点魔力值参数（T0/N0/B0/L）并持久化
+ *   2. 绘制 B-A 曲线图
+ */
+function handleMybonusPage($, host, profile, stored) {
+    let params = stored;
+
+    // --- 参数提取 ---
+    if (!params.ready && !StorageManager.isBlocked(host)) {
+        const extracted = DOMParser.extractParams($);
+        if (extracted && extracted.T0 && extracted.N0 && extracted.B0 && extracted.L) {
+            console.log('[PTMyBonusCalc] 参数提取成功:', extracted.T0, extracted.N0, extracted.B0, extracted.L);
+            params = { T0: extracted.T0, N0: extracted.N0, B0: extracted.B0, L: extracted.L, ready: true };
+            StorageManager.setBlocked(host, false);
+            if (!stored.ready) {
+                alert('魔力值参数已更新');
+            }
+        } else {
+            // 提取失败：标记站点，后续不再自动提取
+            StorageManager.setBlocked(host, true);
+            StorageManager.saveParams(host, { T0: 0, N0: 0, B0: 0, L: 0 });
+            alert('魔力值参数获取失败，该站点已记录，后续不再自动获取。请将Tampermonkey的配置模式修改为高级后手动修改存储配置参数，详见说明文档');
+            return;
+        }
+        StorageManager.saveParams(host, { T0: params.T0, N0: params.N0, B0: params.B0, L: params.L });
+    }
+
+    if (!params.ready) return;
+
+    const { T0, N0, B0, L } = params;
+
+    // --- 获取当前 A、B 值 ---
+    let A, B;
+    const mbCfg = profile.myonus || {};
+
+    if (mbCfg.extractCurrentB) {
+        // M-Team：从页面提取 B 值，然后反推 A
+        let rawB = mbCfg.extractCurrentB($);
+        B = mbCfg.adjustB ? mbCfg.adjustB($, rawB) : rawB;
+    } else {
+        // NexusPHP：从页面提取 A 值，然后计算 B
+        A = mbCfg.extractCurrentA ? mbCfg.extractCurrentA($) : 0;
+        B = CalcEngine.calcB(A, B0, L);
+    }
+
+    // 防止 B 值溢出（B 理论上不可达到 B0）
+    B = B >= B0 ? B0 * 0.98 : B;
+
+    // M-Team 需从修正后 B 值反推 A
+    if (mbCfg.extractCurrentB) {
+        A = CalcEngine.calcAbyB(B, B0, L);
+    }
+
+    // --- 渲染图表 ---
+    const chartInsertSelector = mbCfg.chartInsertSelector || 'table+h1';
+    const $insertBefore = $(chartInsertSelector);
+    if ($insertBefore.length) {
+        Renderer.renderChart({ $insertBefore, A, B, B0, L });
+    }
+}
+
+/**
+ * 处理种子列表页（/torrents）：
+ *   为每行种子添加 B|A@A/GB 列。
+ */
+function handleTorrentsPage($, profile, params) {
+    const cfg = profile.seedTable;
+    let $headerCells, $dataRows;
+
+    if (cfg.headerSelector) {
+        // M-Team：表头和内容分离
+        $headerCells = $(cfg.headerSelector);
+        $dataRows = $(cfg.rowSelector);
+    } else {
+        // NexusPHP：表头是第一行
+        const $allRows = $(cfg.rowSelector);
+        if ($allRows.length < 2) return;
+        $headerCells = $allRows.first().children(cfg.headerTag);
+        $dataRows = $allRows.slice(1);
+    }
+
+    // --- 检测列索引 ---
+    let cols;
+    if (cfg.colStrategy === 'position') {
+        // 固定偏移策略
+        const allHeaders = cfg.headerSelector
+            ? $(cfg.headerSelector)
+            : $(cfg.rowSelector).first().children(cfg.headerTag);
+        const colLen = allHeaders.length;
+        // 检查是否已添加过 B|A@A/GB 列
+        const alreadyAdded = allHeaders.last().text().indexOf(cfg.colTitle) !== -1;
+        if (alreadyAdded) {
+            // 仅更新数据列
+            const adjLen = colLen - 1;
+            cols = {
+                i_T: adjLen - cfg.colOffsets.timeFromEnd,
+                i_S: adjLen - cfg.colOffsets.sizeFromEnd,
+                i_N: adjLen - cfg.colOffsets.seedersFromEnd,
+            };
+            Renderer.addTableColumn({
+                $headerRow: cfg.headerSelector ? $(cfg.headerSelector).parent() : $headerCells.parent(),
+                $dataRows, cols, params, tableCfg: cfg, updateOnly: true,
+            });
+            return;
+        }
+        cols = {
+            i_T: colLen - cfg.colOffsets.timeFromEnd,
+            i_S: colLen - cfg.colOffsets.sizeFromEnd,
+            i_N: colLen - cfg.colOffsets.seedersFromEnd,
+        };
+    } else {
+        // 图标识别策略
+        cols = DOMParser.detectColumnsByIcon($headerCells, cfg.iconClasses);
+        if (!cols) {
+            console.log('[PTMyBonusCalc] 未检测到 NexusPHP 种子表格，跳过。');
+            return;
+        }
+    }
+
+    // --- 添加列 ---
+    const $headerRow = cfg.headerSelector
+        ? $(cfg.headerSelector).parent()
+        : $(cfg.rowSelector).first();
+
+    Renderer.addTableColumn({ $headerRow, $dataRows, cols, params, tableCfg: cfg });
+}
+
+/**
+ * 处理用户详情页（/userdetails）：
+ *   监听 AJAX 加载的做种表格，动态添加 B|A@A/GB 列。
+ */
+function handleUserdetailsPage($, profile, params) {
+    const udCfg = profile.userdetails;
+    if (!udCfg) {
+        console.log('[PTMyBonusCalc] 当前站点未配置 userdetails 支持。');
+        return;
+    }
+
+    const $container = $(udCfg.containerSelector);
+    if (!$container.length) {
+        console.log('[PTMyBonusCalc] 未找到做种表格容器 ' + udCfg.containerSelector);
+        return;
+    }
+
+    const tableCfg = profile.seedTable;
+
+    /**
+     * 为 userdetails 做种表格添加 B|A@A/GB 列。
+     * userdetails 页面的表格时间列没有 img.time 图标，需要通过日期格式识别。
+     */
+    function processTable($table) {
+        const $rows = $table.find('tr');
+        if ($rows.length < 2) return;
+
+        const $headerCells = $rows.first().children('td');
+
+        // 通过图标识别 size 和 seeders 列
+        let i_S, i_N;
+        $headerCells.each(function (col) {
+            if ($(this).find('img.size').length) i_S = col;
+            else if ($(this).find('img.seeders').length) i_N = col;
+        });
         if (i_S === undefined || i_N === undefined) {
             console.log('[PTMyBonusCalc] 无法识别 userdetails 做种表格的 size/seeders 列，跳过。');
             return;
         }
 
-        // 第二步：通过数据行中的日期格式识别时间列（格式：YYYY-MM-DD）
-        $rows.each(function (row) {
-            if (row === 0) return;  // 跳过表头
-            var $this = $(this);
-            $this.children('td').each(function (col) {
-                if ($(this).text().match(/\d{4}-\d{2}-\d{2}/)) {
-                    i_T = col;
-                    return false;  // break inner loop
-                }
-            });
-            if (i_T !== undefined) return false;  // break outer loop
-        });
-
+        // 通过日期格式识别时间列
+        const i_T = DOMParser.detectTimeColByDatePattern($rows);
         if (i_T === undefined) {
             console.log('[PTMyBonusCalc] 无法识别 userdetails 做种表格的时间列，跳过。');
             return;
         }
 
-        // 第三步：检查是否已经添加过 B|A@A/GB 列（翻页时表格内容被替换，需重新添加）
-        var $headerLastTd = $rows.first().children('td:last');
-        var alreadyAdded = $headerLastTd.text().indexOf('B|A@A/GB') !== -1;
+        // 检查是否已添加过列
+        const alreadyAdded = $headerCells.last().text().indexOf(tableCfg.colTitle) !== -1;
 
-        if (!alreadyAdded) {
-            // 首次添加：在表头最后一列前插入 B|A@A/GB 列标题
-            $rows.first().children("td:last").before(
-                '<td class="colhead" align="center" title="时魔|A值@每GB的A值">B|A@A/GB</td>'
-            );
-        }
-
-        // 第四步：为每行数据计算并插入 B|A@A/GB
-        $rows.each(function (row) {
-            if (row === 0) return;  // 跳过表头
-            var $this = $(this);
-            var textA = makeA($this, i_T, i_S, i_N);
-            if (alreadyAdded) {
-                // 翻页更新：只替换内容
-                $this.children("td:last").html(textA);
-            } else {
-                // 首次添加：插入新列
-                $this.children("td:last").before('<td class="rowfollow" align="center">' + textA + '</td>');
-            }
+        Renderer.addTableColumn({
+            $headerRow: $rows.first(),
+            $dataRows: $rows.slice(1),
+            cols: { i_T, i_S, i_N },
+            params,
+            tableCfg,
+            updateOnly: alreadyAdded,
         });
     }
+
+    // 如果表格已存在（页面已展开），立即处理
+    const $existingTable = $container.find('table');
+    if ($existingTable.length) {
+        processTable($existingTable);
+    }
+
+    // MutationObserver 监听 AJAX 加载和翻页
+    const observer = new MutationObserver(function (mutations) {
+        mutations.forEach(function (mutation) {
+            if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                mutation.addedNodes.forEach(function (node) {
+                    if (node.tagName === 'TABLE') {
+                        processTable($(node));
+                    } else if (node.querySelectorAll) {
+                        $(node).find('table').each(function () {
+                            processTable($(this));
+                        });
+                    }
+                });
+            }
+        });
+    });
+
+    observer.observe($container[0], { childList: true, subtree: true });
+    console.log('[PTMyBonusCalc] userdetails 做种表格监听已启动');
+}
+
+// ============================================================
+// 第 7 层：应用控制器
+// ============================================================
+
+const App = {
+    /** @type {object} 当前站点配置 */
+    profile: null,
+    /** @type {string} 站点二级域名，用作存储键 */
+    host: '',
+    /** @type {string} 当前页面类型 */
+    pageType: '',
 
     /**
-     * 设置 MutationObserver 监听 userdetails 页面做种表格容器的 DOM 变化。
-     *
-     * 做种表格包裹在 div#ka1[data-type='seeding'] 中，初始为 display:none 且空内容。
-     * 用户点击"显示/隐藏"后 AJAX 加载表格，翻页时也会替换表格内容。
-     * Observer 监听 #ka1 的子节点变化，当检测到 <table> 元素时进行处理。
+     * 初始化：检测站点和页面类型。
+     * @returns {boolean} 是否应该继续运行
      */
-    function setupUserdetailsObserver() {
-        var $container = $('#ka1');
-        if (!$container.length) {
-            console.log('[PTMyBonusCalc] 未找到做种表格容器 #ka1');
-            return;
+    init() {
+        const $ = jQuery;
+        this.host = window.location.host.match(/\b[^.]+\.[^.]+$/)[0];
+        const url = window.location.toString();
+
+        // --- 匹配站点配置 ---
+        for (const p of SITE_PROFILES) {
+            if (p.match(this.host)) {
+                this.profile = p;
+                break;
+            }
         }
 
-        // 如果表格已存在（页面已展开），立即处理
-        var $existingTable = $container.find('table');
-        if ($existingTable.length) {
-            addDataColUserdetailsTable($existingTable);
+        // --- 检测页面类型 ---
+        if (url.indexOf('mybonus') !== -1) {
+            this.pageType = 'mybonus';
+        } else if (url.indexOf('bonus.php') !== -1 && url.indexOf('tjupt.org') !== -1) {
+            // TJUPT 兼容：魔力值页面 URL 为 bonus.php
+            this.pageType = 'mybonus';
+        } else if (url.indexOf('userdetails') !== -1) {
+            this.pageType = 'userdetails';
+        } else if (url.indexOf('torrents') !== -1 || url.indexOf('browse') !== -1) {
+            this.pageType = 'torrents';
+        } else {
+            this.pageType = 'unknown';
         }
 
-        // 使用 MutationObserver 监听后续的 AJAX 加载和翻页
-        var observer = new MutationObserver(function (mutations) {
-            mutations.forEach(function (mutation) {
-                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                    // 查找新增节点中的表格
-                    mutation.addedNodes.forEach(function (node) {
-                        if (node.tagName === 'TABLE') {
-                            addDataColUserdetailsTable($(node));
-                        } else if (node.querySelectorAll) {
-                            var $tables = $(node).find('table');
-                            $tables.each(function () {
-                                addDataColUserdetailsTable($(this));
-                            });
-                        }
-                    });
+        // 检查页面是否在该站点的有效范围内（如 M-Team 仅限 mybonus/browse）
+        if (this.profile.validPages) {
+            // 'torrents' 类型的 URL 可能是 browse 也可能是 torrents，统一映射检查
+            const pageKey = (this.pageType === 'torrents' && url.indexOf('browse') !== -1)
+                ? 'browse' : this.pageType;
+            if (!this.profile.validPages.includes(pageKey)) return false;
+        }
+
+        return true;
+    },
+
+    /**
+     * 主运行入口。
+     */
+    run() {
+        const $ = jQuery;
+
+        // 更新页面类型（SPA 页面切换时可能变化）
+        const url = window.location.toString();
+        if (url.indexOf('mybonus') !== -1) {
+            this.pageType = 'mybonus';
+        } else if (url.indexOf('bonus.php') !== -1 && url.indexOf('tjupt.org') !== -1) {
+            this.pageType = 'mybonus';
+        } else if (url.indexOf('torrents') !== -1 || url.indexOf('browse') !== -1) {
+            this.pageType = 'torrents';
+        } else if (url.indexOf('userdetails') !== -1) {
+            this.pageType = 'userdetails';
+        }
+
+        // --- 获取魔力值参数 ---
+        const stored = StorageManager.getParams(this.host);
+
+        // --- 按页面类型分发处理 ---
+        switch (this.pageType) {
+            case 'mybonus':
+                handleMybonusPage($, this.host, this.profile, stored);
+                break;
+
+            case 'userdetails':
+                if (!stored.ready) {
+                    alert('未找到魔力值参数，请先打开魔力值系统说明页面获取（/mybonus）');
+                    return;
                 }
+                handleUserdetailsPage($, this.profile, stored);
+                break;
+
+            case 'torrents':
+                if (!stored.ready) {
+                    alert('未找到魔力值参数，请先打开魔力值系统说明页面获取（/mybonus）');
+                    return;
+                }
+                handleTorrentsPage($, this.profile, stored);
+                break;
+
+            default:
+                // 未知页面类型，静默退出
+                break;
+        }
+    },
+
+    /**
+     * SPA 页面加载检测与运行（M-Team 专用）。
+     *
+     * M-Team 使用 SPA 架构，页面内导航不会触发完整页面刷新。
+     * 通过三层轮询检测 DOM 变化，等待种子表格加载完成后执行。
+     */
+    runWithSPAWait() {
+        const $ = jQuery;
+        const self = this;
+        let count = 0;
+        let tableBlured = false;
+        let T0Found = false;
+        let seedTableFound = false;
+
+        // 更新页面类型
+        self.pageType = window.location.toString().indexOf('mybonus') !== -1 ? 'mybonus' : 'torrents';
+
+        // 第一层：等待魔力值参数元素或种子表格出现
+        const itv = setInterval(() => {
+            if (self.pageType === 'mybonus') {
+                T0Found = $("li:has(b:contains('T0'))")[1];
+            }
+            if (T0Found || seedTableFound || count >= 100) {
+                clearInterval(itv);
+                self.run();
+            }
+            count++;
+        }, 100);
+
+        // 第二层：检测表格是否进入加载状态（模糊遮罩出现）
+        let count2 = 0;
+        const itvBlur = setInterval(() => {
+            if ($('div.ant-spin-blur')[0] || count2 >= 50) {
+                tableBlured = true;
+                clearInterval(itvBlur);
+            }
+            count2++;
+        }, 100);
+
+        // 第三层：检测表格加载完成（遮罩消失）
+        let count3 = 0;
+        const itvUnblur = setInterval(() => {
+            if ((tableBlured && !$('div.ant-spin-blur')[0]) || count3 >= 100) {
+                seedTableFound = $(self.profile.seedTable.rowSelector)[1];
+                if (seedTableFound || count3 >= 100) {
+                    clearInterval(itvUnblur);
+                }
+            }
+            count3++;
+        }, 100);
+    },
+};
+
+// ============================================================
+// 入口
+// ============================================================
+
+(function () {
+    if (!App.init()) return;
+
+    if (App.profile.isSPA) {
+        App.runWithSPAWait();
+
+        // SPA URL 变化监听（页面内导航时重新执行）
+        if (window.onurlchange === null) {
+            window.addEventListener('urlchange', function () {
+                App.runWithSPAWait();
             });
-        });
-
-        observer.observe($container[0], { childList: true, subtree: true });
-        console.log('[PTMyBonusCalc] userdetails 做种表格监听已启动');
-    }
-
-    // ---------------- 通用站点（NexusPHP架构）：添加 B|A@A/GB 列 ----------------
-    function addDataColGeneral() {
-        var i_T, i_S, i_N
-        $(seedTableSelector).each(function (row) {
-            var $this = $(this);
-            if (row == 0) {
-                // 第一行是表头：通过图标识别各列的含义
-                $this.children('td').each(function (col) {
-                    if ($(this).find('img.time').length) {
-                        i_T = col        // 发布时间列
-                    } else if ($(this).find('img.size').length) {
-                        i_S = col        // 体积列
-                    } else if ($(this).find('img.seeders').length) {
-                        i_N = col        // 做种人数列
-                    }
-                })
-                if (!i_T || !i_S || !i_N) {
-                    // 未能识别种子表格列（非 NexusPHP 页面），静默退出
-                    console.log('[PTMyBonusCalc] 未检测到 NexusPHP 种子表格，跳过。');
-                    return
-                }
-                // 确认是 NexusPHP 站点后，检查魔力值参数是否就绪
-                if (!argsReady) {
-                    alert("未找到魔力值参数，请先打开魔力值系统说明页面获取（/mybonus）");
-                    return
-                }
-                // 在表头最后一列前插入新列标题
-                $this.children("td:last").before("<td class=\"colhead\" title=\"时魔|A值@每GB的A值\">B|A@A/GB</td>");
-            } else {
-                // 数据行：计算并插入 A@A/GB
-                var textA = makeA($this, i_T, i_S, i_N)
-                $this.children("td:last").before("<td class=\"rowfollow\">" + textA + "</td>");
-            }
-        })
-    }
-
-    // ---------------- M-Team 站点特殊处理：添加 B|A@A/GB 列 ----------------
-    // M-Team 使用自定义 UI 框架（非 NexusPHP），DOM 结构不同，需单独处理
-    function addDataColMTeam() {
-        let i_T, i_S, i_N, addFlag = false
-
-        // 通过表格列数计算列索引（M-Team 种子表格固定列顺序，从右往左推）
-        let colLen = $('div.mt-4>table>thead>tr>th').length
-        // 检查是否已添加过 B|A@A/GB 列（页面局部刷新后更新而非新增）
-        if ($('div.mt-4>table>thead>tr>th:last').text().indexOf('B|A@A/GB') != -1) {
-            addFlag = true
-            colLen -= 1   // 排除已添加的列
         }
-        // M-Team 表格最后几列依次为：... | 发布时间 | 体积 | 做种数 | 下载数 | 完成数
-        i_T = colLen - 5  // 发布时间
-        i_S = colLen - 4  // 体积
-        i_N = colLen - 3  // 做种数
-
-        // 首次执行时添加表头
-        if (!addFlag) {
-            // 确认参数就绪后再添加表头（避免显示 NaN）
-            if (!argsReady) {
-                alert("未找到魔力值参数，请先打开魔力值系统说明页面获取（/mybonus）");
-                return
-            }
-            $('div.mt-4>table>thead>tr>th:last').after(
-                "<th class=\"border-0 border-b border-solid border-[--mt-line-color] p-2 \" " +
-                "style=\"width: 130px;\" title=\"时魔|A值@每GB的A值\"> " +
-                "<div class=\"action\">B|A@A/GB</div>  </th>");
-        }
-
-        // 遍历每行种子数据
-        $(seedTableSelector).each(function (row) {
-            var $this = $(this);
-            var textA = makeA($this, i_T, i_S, i_N)
-            let tdTextA = "<td class=\"border-0 border-b border-solid border-[--mt-line-color] p-0 \" align=\"center\">"
-                + textA + "</td>"
-            if (addFlag) {
-                // 已存在列时只更新内容（页面局部刷新场景）
-                $this.children("td:last").html(textA)
-            } else {
-                // 首次添加整列
-                $this.children("td:last").after(tdTextA)
-            }
-        })
-    }
-
-    // 根据站点类型选择不同的表格处理方式
-    if (isMTeam) {
-        addDataColMTeam()
     } else {
-        addDataColGeneral()
+        App.run();
     }
-}
-
-
-/**
- * M-Team 站点页面加载检测器。
- *
- * M-Team 使用 SPA（单页应用）架构，页面内导航（如翻页、切换分类）
- * 不会触发完整的页面刷新，而是通过 DOM 局部更新实现。
- * 因此需要轮询检测 DOM 变化，等待种子表格加载完成后再执行计算。
- *
- * 检测逻辑分三步：
- *   1. 等待页面出现"加载中"的模糊遮罩（ant-spin-blur）
- *   2. 等待遮罩消失（表示数据加载完成）
- *   3. 确认种子表格已渲染完毕
- *   以上任一步超过最大等待次数也会强制继续，避免无限等待。
- */
-function MTteamWaitPageLoadAndRun() {
-    let $ = jQuery
-    let count = 0
-    let tableBlured = false
-    let T0Found = false
-    let seedTableFound = false
-
-    // 页面局部刷新后重新判断当前是否在 mybonus 页面
-    isMybonusPage = window.location.toString().indexOf("mybonus") != -1
-
-    // 第一层轮询：等待魔力值参数元素或种子表格出现
-    let itv = setInterval(() => {
-        if (isMybonusPage) {
-            T0Found = $("li:has(b:contains('T0'))")[1]
-        }
-        if (T0Found || seedTableFound || count >= 100) {
-            clearInterval(itv);
-            run()
-        }
-        count++
-    }, 100);
-
-    // 第二层轮询：检测表格是否进入加载状态（出现模糊遮罩）
-    let count2 = 0
-    let itvTableBlur = setInterval(() => {
-        if ($('div.ant-spin-blur')[0] || count2 >= 50) {
-            tableBlured = true
-            clearInterval(itvTableBlur)
-        }
-        count2++
-    }, 100)
-
-    // 第三层轮询：检测表格加载完成（遮罩消失），确认种子表数据行已渲染
-    let count3 = 0
-    let itvTableUnblur = setInterval(() => {
-        if (tableBlured && !$('div.ant-spin-blur')[0] || count3 >= 100) {
-            seedTableFound = $(seedTableSelector)[1]  // [1] 获取第二行（第一行是表头）
-            if (seedTableFound || count3 >= 100) {
-                clearInterval(itvTableUnblur)
-            }
-        }
-        count3++
-    }, 100)
-}
-
-// ==================== 脚本入口 ====================
-
-// 提取主机名（二级域名.顶级域名），用作存储键名
-let host = window.location.host.match(/\b[^\.]+\.[^\.]+$/)[0]
-
-// 检测是否为 M-Team（需要特殊处理 SPA 导航和不同的 DOM 结构）
-let isMTeam = window.location.toString().indexOf("m-team") != -1
-
-// 种子表格选择器：M-Team 和通用 NexusPHP 站点不同
-let seedTableSelector = isMTeam ? 'div.mt-4>table>tbody>tr' : '.torrents:last-of-type>tbody>tr'
-
-// 检测是否在魔力值系统说明页面
-let isMybonusPage = window.location.toString().indexOf("mybonus") != -1
-// TJUPT 的魔力值页面 URL 不同，特殊处理
-if (window.location.toString().indexOf("tjupt.org") != -1) {
-    isMybonusPage = window.location.toString().indexOf("bonus.php") != -1
-}
-
-// 检测是否在用户详情页面（userdetails.php）
-let isUserdetailsPage = window.location.toString().indexOf("userdetails") != -1
-
-// M-Team 仅在 mybonus 或 browse 页面运行（其他页面无种子列表）
-if (isMTeam) {
-    if (isMybonusPage || window.location.toString().indexOf("browse") != -1) {
-        MTteamWaitPageLoadAndRun()
-    }
-} else {
-    run()
-}
-
-// 监听 URL 变化（用于 M-Team SPA 页面内的局部导航刷新）
-// window.onurlchange 是 Tampermonkey 提供的 API，检测 AJAX 驱动的 URL 变化
-var currentUrl = window.location.href;
-if (window.onurlchange === null) {
-    window.addEventListener('urlchange', (info) => MTteamWaitPageLoadAndRun());
-}
+})();
