@@ -140,9 +140,11 @@ const SITE_PROFILES = [
             chartInsertSelector: 'table+h1',
         },
 
-        // userdetails.php 做种表格配置
+        // userdetails.php 做种/下载/上传表格配置
+        // #ka  = 已上传, #ka1 = 当前做种, #ka2 = 当前下载
+        // #ka3（已完成）和 #ka4（未完成）没有做种数列，无法计算 B|A@A/GB
         userdetails: {
-            containerSelector: '#ka1',
+            containerSelectors: ['#ka', '#ka1', '#ka2'],
         },
 
         validPages: null,  // 所有页面均有效
@@ -644,16 +646,11 @@ function handleUserdetailsPage($, profile, params) {
         return;
     }
 
-    const $container = $(udCfg.containerSelector);
-    if (!$container.length) {
-        console.log('[PTMyBonusCalc] 未找到做种表格容器 ' + udCfg.containerSelector);
-        return;
-    }
-
     const tableCfg = profile.seedTable;
+    const containers = udCfg.containerSelectors || [udCfg.containerSelector];
 
     /**
-     * 为 userdetails 做种表格添加 B|A@A/GB 列。
+     * 为 userdetails 做种/下载表格添加 B|A@A/GB 列。
      * userdetails 页面的表格时间列没有 img.time 图标，需要通过日期格式识别。
      */
     function processTable($table) {
@@ -669,14 +666,14 @@ function handleUserdetailsPage($, profile, params) {
             else if ($(this).find('img.seeders').length) i_N = col;
         });
         if (i_S === undefined || i_N === undefined) {
-            console.log('[PTMyBonusCalc] 无法识别 userdetails 做种表格的 size/seeders 列，跳过。');
+            console.log('[PTMyBonusCalc] 无法识别 userdetails 表格的 size/seeders 列，跳过。');
             return;
         }
 
         // 通过日期格式识别时间列
         const i_T = DOMParser.detectTimeColByDatePattern($rows);
         if (i_T === undefined) {
-            console.log('[PTMyBonusCalc] 无法识别 userdetails 做种表格的时间列，跳过。');
+            console.log('[PTMyBonusCalc] 无法识别 userdetails 表格的时间列，跳过。');
             return;
         }
 
@@ -693,31 +690,45 @@ function handleUserdetailsPage($, profile, params) {
         });
     }
 
-    // 如果表格已存在（页面已展开），立即处理
-    const $existingTable = $container.find('table');
-    if ($existingTable.length) {
-        processTable($existingTable);
+    /**
+     * 为指定容器设置 MutationObserver，监听 AJAX 加载的表格。
+     */
+    function setupContainerObserver(selector) {
+        const $container = $(selector);
+        if (!$container.length) {
+            console.log('[PTMyBonusCalc] 未找到表格容器 ' + selector);
+            return;
+        }
+
+        // 如果表格已存在（页面已展开），立即处理
+        const $existingTable = $container.find('table');
+        if ($existingTable.length) {
+            processTable($existingTable);
+        }
+
+        // MutationObserver 监听 AJAX 加载和翻页
+        const observer = new MutationObserver(function (mutations) {
+            mutations.forEach(function (mutation) {
+                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                    mutation.addedNodes.forEach(function (node) {
+                        if (node.tagName === 'TABLE') {
+                            processTable($(node));
+                        } else if (node.querySelectorAll) {
+                            $(node).find('table').each(function () {
+                                processTable($(this));
+                            });
+                        }
+                    });
+                }
+            });
+        });
+
+        observer.observe($container[0], { childList: true, subtree: true });
+        console.log('[PTMyBonusCalc] 表格容器监听已启动: ' + selector);
     }
 
-    // MutationObserver 监听 AJAX 加载和翻页
-    const observer = new MutationObserver(function (mutations) {
-        mutations.forEach(function (mutation) {
-            if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                mutation.addedNodes.forEach(function (node) {
-                    if (node.tagName === 'TABLE') {
-                        processTable($(node));
-                    } else if (node.querySelectorAll) {
-                        $(node).find('table').each(function () {
-                            processTable($(this));
-                        });
-                    }
-                });
-            }
-        });
-    });
-
-    observer.observe($container[0], { childList: true, subtree: true });
-    console.log('[PTMyBonusCalc] userdetails 做种表格监听已启动');
+    // 为每个容器（做种 #ka1、下载 #ka2 等）设置监听
+    containers.forEach(setupContainerObserver);
 }
 
 // ============================================================
