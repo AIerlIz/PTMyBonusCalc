@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PT站点魔力计算器
 // @namespace    https://github.com/AIerlIz/PTMyBonusCalc
-// @version      2.3.1
+// @version      2.3.2
 // @description  在NexusPHP架构的PT站点显示每个种子的B值(时魔)、A值和每GB的A值。支持userdetails做种列表显示。通用匹配，自动适配。
 // @author       AIerlIz (forked from neoblackxt, LaneLau)
 // @require      https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js
@@ -15,6 +15,14 @@
 // @match        *://*/*mybonus*
 //    *userdetails* 覆盖 /userdetails、/userdetails.php 等所有变体
 // @match        *://*/*userdetails*
+// === 排除站点 ===
+// @exclude      *hdarea.club*
+// @exclude      *hhanclub.net*
+// @exclude      *qingwapt.com*
+// @exclude      *haidan.cc*
+// @exclude      totheglory.im*
+// @exclude      *springsunday.net*
+// @exclude      *rousi.pro*
 // === TJUPT 兼容（魔力值页面 URL 为 bonus.php） ===
 // @match        *://*/*bonus.php*
 // @license      GPL License
