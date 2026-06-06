@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         PT站点魔力计算器
-// @namespace    https://github.com/neoblackxt/PTMyBonusCalc
+// @namespace    https://github.com/AIerlIz/PTMyBonusCalc
 // @version      2.3.0
-// @description  在NexusPHP架构的PT站点显示每个种子的B值(时魔)、A值和每GB的A值。通用匹配，自动适配。
-// @author       neoblackxt, LaneLau
+// @description  在NexusPHP架构的PT站点显示每个种子的B值(时魔)、A值和每GB的A值。支持userdetails做种列表显示。通用匹配，自动适配。
+// @author       AIerlIz (forked from neoblackxt, LaneLau)
 // @require      https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js
 // @require      https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js
 // === M-Team（SPA架构，需特殊处理，匹配所有页面） ===

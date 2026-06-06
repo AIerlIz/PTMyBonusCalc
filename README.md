@@ -42,7 +42,7 @@
 
 ### 使用
 
-脚本安装：https://greasyfork.org/en/scripts/439369-pt站点魔力计算器
+脚本安装：https://greasyfork.org/zh-CN/scripts/581350-pt站点魔力计算器
 
 脚本已内置通用匹配规则，覆盖以下页面：
 - `*://*/*torrents*` — 种子列表页
@@ -52,15 +52,15 @@
 
 如需手动添加网站：管理面板 → 已安装脚本 → 本脚本 → 编辑 → 设置 → 包括/排除 → 用户匹配 → 添加，如 `*://*.hddolby.com/*`
 
-首次使用须打开各站的魔力值公式或商店页面获取公式参数，否则无法计算。参数保存在管理面板→已安装脚本→本脚本→编辑→存储。 [图文说明](https://github.com/neoblackxt/PTMyBonusCalc/issues/6)
+首次使用须打开各站的魔力值公式或商店页面获取公式参数，否则无法计算。参数保存在管理面板→已安装脚本→本脚本→编辑→存储。 [图文说明](https://github.com/AIerlIz/PTMyBonusCalc/issues/6)
 
 ### 参与开发
 
-https://github.com/neoblackxt/PTMyBonusCalc
+https://github.com/AIerlIz/PTMyBonusCalc
 
 ### 问题反馈
 
-https://github.com/neoblackxt/PTMyBonusCalc/issues
+https://github.com/AIerlIz/PTMyBonusCalc/issues
 
 请将不支持的站点的种子列表和魔力值网页源代码粘贴在issue中，**注意把你的网站ID信息以及其他敏感信息删除，但不要破环网页结构** 不知道怎么删除请不要发出来（Ctrl + U 查看网页源代码，Ctrl + S 保存文件）。
 
@@ -68,9 +68,9 @@ https://github.com/neoblackxt/PTMyBonusCalc/issues
 
 ### Credit
 
-neoblackxt
+AIerlIz
 
-基于LaneLau 的[NexusPHP魔力计算器](https://greasyfork.org/zh-CN/scripts/416471-nexusphp%E9%AD%94%E5%8A%9B%E8%AE%A1%E7%AE%97%E5%99%A8)修改
+Fork 自 [neoblackxt/PTMyBonusCalc](https://github.com/neoblackxt/PTMyBonusCalc)，基于 LaneLau 的 [NexusPHP魔力计算器](https://greasyfork.org/zh-CN/scripts/416471-nexusphp%E9%AD%94%E5%8A%9B%E8%AE%A1%E7%AE%97%E5%99%A8)
 
 ### 捐助
 
