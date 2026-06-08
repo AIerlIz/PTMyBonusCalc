@@ -474,6 +474,8 @@ const Renderer = {
         for (let i = 0; i < xMax; i += L / 4) {
             data.push([i, CalcEngine.calcB(i, B0, L)]);
         }
+        // 当前种子坐标点
+        const spot = [A, B];
 
         // 插入图表容器
         $insertBefore.before('<div id="ptmybonuscalc-chart" style="width:600px;height:400px;margin:auto;"></div>');
@@ -497,7 +499,7 @@ const Renderer = {
             axisPointer: { label: { backgroundColor: '#777' } },
             series: [
                 { type: 'line', data: data, symbol: 'none' },
-                { type: 'line', data: [[A, B]], symbolSize: 6 },
+                { type: 'line', data: [spot], symbolSize: 6 },
             ],
         });
     },
@@ -541,7 +543,7 @@ function handleMybonusPage($, host, profile, stored) {
 
     // --- 获取当前 A、B 值 ---
     let A, B;
-    const mbCfg = profile.myonus || {};
+    const mbCfg = profile.mybonus || {};
 
     if (mbCfg.extractCurrentB) {
         // M-Team：从页面提取 B 值，然后反推 A
