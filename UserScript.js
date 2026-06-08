@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PT站点魔力计算器
 // @namespace    https://github.com/AIerlIz/PTMyBonusCalc
-// @version      2.4.0
+// @version      2.5.0
 // @description  在NexusPHP架构的PT站点显示每个种子的B值(时魔)、A值和每GB的A值。支持userdetails做种列表显示。通用匹配，自动适配。
 // @author       AIerlIz (forked from neoblackxt, LaneLau)
 // @require      https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js
@@ -477,6 +477,16 @@ const Renderer = {
         // 当前种子坐标点
         const spot = [A, B];
 
+        // 推荐坐标点：边际效应阈值
+        // 公式 B = B₀·(2/π)·arctan(A/L)，导函数 dB/dA = (2B₀)/(πL) · 1/(1+(A/L)²)
+        // 获得 1 点 B 需要投入的 A：dA/dB = (πL)/(2B₀) · (1+(A/L)²)
+        // 当 dA/dB 为初始值(A=0)的 N 倍时，A = L·√(N-1)
+        // 取 N=10（边际成本增至 10 倍），继续堆 A 收益递减严重
+        const N = 10;
+        const recommendA = L * Math.sqrt(N - 1);
+        const recommendB = CalcEngine.calcB(recommendA, B0, L);
+        const recommend = [recommendA, recommendB];
+
         // 插入图表容器
         $insertBefore.before('<div id="ptmybonuscalc-chart" style="width:600px;height:400px;margin:auto;"></div>');
 
@@ -499,7 +509,20 @@ const Renderer = {
             axisPointer: { label: { backgroundColor: '#777' } },
             series: [
                 { type: 'line', data: data, symbol: 'none' },
-                { type: 'line', data: [spot], symbolSize: 6 },
+                { 
+                    type: 'line', 
+                    data: [spot], 
+                    symbolSize: 6,
+                    lineStyle: { color: '#ff7300' },
+                    itemStyle: { color: '#ff7300' }
+                },
+                {
+                    type: 'line',
+                    data: [recommend],
+                    symbolSize: 6,
+                    lineStyle: { color: '#009838' },
+                    itemStyle: { color: '#009838' }
+                },
             ],
         });
     },
